@@ -7,4 +7,7 @@ public class OctopusSettings
     public string ElectricityMeterSerial { get; set; } = "";
     public string Mprn { get; set; } = "";
     public string GasMeterSerial { get; set; } = "";
+    public string AccountNumber { get; set; } = "";
+    public string ElectricityTariffCode { get; set; } = "";
+    public string GasTariffCode { get; set; } = "";
 }

@@ -197,7 +197,11 @@ else
         var data = _summary.Intervals.Select(i => (double)i.Consumption).ToArray();
         var prevData = _showPrevious ? _prev?.Intervals.Select(i => (double)i.Consumption).ToArray() : null;
         var prevLabel = _prevFrom.HasValue ? $"Previous ({_prevFrom.Value:dd MMM} – {_from:dd MMM})" : "Previous period";
-        await JS.InvokeVoidAsync("octopusCharts.render", "gasChart", labels, data, "m³", "#ffc107", prevData, prevLabel);
+        try
+        {
+            await JS.InvokeVoidAsync("octopusCharts.render", "gasChart", labels, data, "m³", "#ffc107", prevData, prevLabel);
+        }
+        catch (JSException) { }
     }
 
     private static decimal? TotalBillPence(ConsumptionSummary? s) =>

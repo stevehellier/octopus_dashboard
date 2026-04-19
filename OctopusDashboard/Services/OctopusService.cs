@@ -9,7 +9,6 @@ namespace OctopusDashboard.Services;
 public class OctopusService(HttpClient httpClient, IOptions<OctopusSettings> options) : IOctopusService
 {
     private readonly OctopusSettings _settings = options.Value;
-    private const decimal GasM3ToKwh = 11.1m;
 
     public bool IsConfigured =>
         !string.IsNullOrWhiteSpace(_settings.ApiKey) &&
@@ -18,31 +17,129 @@ public class OctopusService(HttpClient httpClient, IOptions<OctopusSettings> opt
         !string.IsNullOrWhiteSpace(_settings.Mprn) &&
         !string.IsNullOrWhiteSpace(_settings.GasMeterSerial);
 
-    public Task<ConsumptionSummary> GetElectricityConsumptionAsync(
+    public async Task<ConsumptionSummary> GetElectricityConsumptionAsync(
         DateTimeOffset from, DateTimeOffset to, string groupBy, CancellationToken ct = default)
-    {
-        var path = $"electricity-meter-points/{_settings.Mpan}/meters/{_settings.ElectricityMeterSerial}/consumption/";
-        return FetchSummaryAsync(path, from, to, groupBy, "kWh", ct);
-    }
-
-    public Task<ConsumptionSummary> GetGasConsumptionAsync(
-        DateTimeOffset from, DateTimeOffset to, string groupBy, CancellationToken ct = default)
-    {
-        var path = $"gas-meter-points/{_settings.Mprn}/meters/{_settings.GasMeterSerial}/consumption/";
-        return FetchSummaryAsync(path, from, to, groupBy, "m\u00B3", ct);
-    }
-
-    private async Task<ConsumptionSummary> FetchSummaryAsync(
-        string path, DateTimeOffset from, DateTimeOffset to, string groupBy, string unit, CancellationToken ct)
     {
         ConfigureAuth();
+        var consumptionPath = $"electricity-meter-points/{_settings.Mpan}/meters/{_settings.ElectricityMeterSerial}/consumption/";
 
-        var url = BuildUrl(path, from, to, "page_size=25000&order_by=period");
-        var raw = await FetchAllPagesAsync<ConsumptionInterval>(url, ct);
+        var raw = await FetchAllPagesAsync<ConsumptionInterval>(BuildUrl(consumptionPath, from, to, "page_size=25000&order_by=period"), ct);
+        var tariffCode = !string.IsNullOrWhiteSpace(_settings.ElectricityTariffCode)
+            ? _settings.ElectricityTariffCode
+            : await GetTariffCodeAsync(_settings.Mpan, true, from, ct);
+
         var grouped = GroupIntervals(raw, groupBy);
         var total = grouped.Sum(i => i.Consumption);
+        var (unitCost, avgRate, standingCharge) = await GetCostDataAsync(tariffCode, "electricity-tariffs", from, to, raw, ct);
 
-        return new ConsumptionSummary(grouped, total, unit);
+        return new ConsumptionSummary(grouped, total, "kWh", unitCost, avgRate, standingCharge);
+    }
+
+    public async Task<ConsumptionSummary> GetGasConsumptionAsync(
+        DateTimeOffset from, DateTimeOffset to, string groupBy, CancellationToken ct = default)
+    {
+        ConfigureAuth();
+        var consumptionPath = $"gas-meter-points/{_settings.Mprn}/meters/{_settings.GasMeterSerial}/consumption/";
+
+        var raw = await FetchAllPagesAsync<ConsumptionInterval>(BuildUrl(consumptionPath, from, to, "page_size=25000&order_by=period"), ct);
+        var tariffCode = !string.IsNullOrWhiteSpace(_settings.GasTariffCode)
+            ? _settings.GasTariffCode
+            : await GetTariffCodeAsync(_settings.Mprn, false, from, ct);
+
+        var grouped = GroupIntervals(raw, groupBy);
+        var total = grouped.Sum(i => i.Consumption);
+        var (unitCost, avgRate, standingCharge) = await GetCostDataAsync(tariffCode, "gas-tariffs", from, to, raw, ct);
+
+        return new ConsumptionSummary(grouped, total, "m\u00B3", unitCost, avgRate, standingCharge);
+    }
+
+    private AccountResponse? _accountCache;
+
+    private async Task<AccountResponse?> GetAccountAsync(CancellationToken ct)
+    {
+        if (_accountCache is not null) return _accountCache;
+        if (string.IsNullOrWhiteSpace(_settings.AccountNumber)) return null;
+        _accountCache = await httpClient.GetFromJsonAsync<AccountResponse>(
+            $"accounts/{_settings.AccountNumber}/", ct);
+        return _accountCache;
+    }
+
+    private async Task<string?> GetTariffCodeAsync(string mpanOrMprn, bool isElectricity, DateTimeOffset from, CancellationToken ct)
+    {
+        try
+        {
+            var account = await GetAccountAsync(ct);
+            if (account is null) return null;
+
+            var meterPoints = isElectricity
+                ? account.Properties.SelectMany(p => p.ElectricityMeterPoints)
+                : account.Properties.SelectMany(p => p.GasMeterPoints);
+
+            var agreements = meterPoints
+                .Where(mp => (isElectricity ? mp.Mpan : mp.Mprn) == mpanOrMprn)
+                .SelectMany(mp => mp.Agreements)
+                .ToList();
+
+            return agreements
+                .Where(a => (a.ValidTo is null || a.ValidTo > from))
+                .OrderByDescending(a => a.ValidFrom ?? DateTimeOffset.MinValue)
+                .FirstOrDefault()?.TariffCode;
+        }
+        catch { return null; }
+    }
+
+    private async Task<(decimal? unitCost, decimal? avgRate, decimal? standingCharge)> GetCostDataAsync(
+        string? tariffCode, string tariffType, DateTimeOffset from, DateTimeOffset to,
+        List<ConsumptionInterval> intervals, CancellationToken ct)
+    {
+        if (tariffCode is null || intervals.Count == 0) return (null, null, null);
+
+        try
+        {
+            var productCode = ExtractProductCode(tariffCode);
+            var ratesUrl = BuildUrl($"products/{productCode}/{tariffType}/{tariffCode}/standard-unit-rates/", from, to);
+            var standingUrl = BuildUrl($"products/{productCode}/{tariffType}/{tariffCode}/standing-charges/", from, to);
+
+            var ratesTask = FetchAllPagesAsync<TariffRate>(ratesUrl, ct);
+            var standingTask = FetchAllPagesAsync<TariffRate>(standingUrl, ct);
+            await Task.WhenAll(ratesTask, standingTask);
+
+            var rates = ratesTask.Result;
+            var standings = standingTask.Result;
+
+            if (rates.Count == 0) return (null, null, null);
+
+            decimal totalCost = intervals.Sum(interval =>
+            {
+                var rate = rates
+                    .Where(r => (r.ValidFrom is null || r.ValidFrom <= interval.IntervalStart)
+                             && (r.ValidTo is null || r.ValidTo > interval.IntervalStart))
+                    .OrderByDescending(r => r.ValidFrom)
+                    .FirstOrDefault();
+                return rate is null ? 0m : interval.Consumption * rate.ValueIncVat;
+            });
+
+            decimal avgRate = intervals.Sum(i => i.Consumption) is > 0 and var tot
+                ? totalCost / tot : rates.Average(r => r.ValueIncVat);
+
+            decimal? dailyStanding = standings.Count > 0
+                ? standings.Average(s => s.ValueIncVat)
+                : null;
+
+            return (totalCost, avgRate, dailyStanding);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[CostData] Error: {ex.Message}");
+            return (null, null, null);
+        }
+    }
+
+    private static string ExtractProductCode(string tariffCode)
+    {
+        // E-1R-VAR-22-11-01-A → VAR-22-11-01
+        var parts = tariffCode.Split('-');
+        return string.Join("-", parts[2..^1]);
     }
 
     private static List<ConsumptionInterval> GroupIntervals(List<ConsumptionInterval> intervals, string groupBy)

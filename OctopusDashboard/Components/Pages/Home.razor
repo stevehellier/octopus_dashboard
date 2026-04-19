@@ -1,7 +1,126 @@
 @page "/"
+@rendermode InteractiveServer
+@inject IOctopusService OctopusService
 
-<PageTitle>Home</PageTitle>
+<PageTitle>Octopus Dashboard</PageTitle>
 
-<h1>Welcome to Octopus Dashboard</h1>
+<h1>Octopus Energy Dashboard</h1>
 
-<p>This dashboard displays your Octopus Energy usage data.</p>
+@if (!OctopusService.IsConfigured)
+{
+    <div class="alert alert-warning">
+        <h4 class="alert-heading">Setup required</h4>
+        <p>Your Octopus Energy API credentials are not configured. Set them using .NET user secrets:</p>
+        <pre><code>cd OctopusDashboard
+dotnet user-secrets set "Octopus:ApiKey" "sk_live_..."
+dotnet user-secrets set "Octopus:Mpan" "1234567890123"
+dotnet user-secrets set "Octopus:ElectricityMeterSerial" "AB1234567"
+dotnet user-secrets set "Octopus:Mprn" "1234567890"
+dotnet user-secrets set "Octopus:GasMeterSerial" "G4P12345678901"
+dotnet user-secrets set "Octopus:ElectricityTariffCode" "E-1R-VAR-22-11-01-A"
+dotnet user-secrets set "Octopus:GasTariffCode" "G-1R-VAR-22-11-01-A"</code></pre>
+        <p>The first five are required. Tariff codes are optional but needed to show cost data — find yours in your <a href="https://octopus.energy/dashboard/developer/" target="_blank">Octopus Energy developer dashboard</a> under <strong>Agreements</strong>.</p>
+    </div>
+}
+else if (_loading)
+{
+    <div class="d-flex align-items-center my-4">
+        <div class="spinner-border text-success me-3" role="status"></div>
+        <span>Loading 30-day summary...</span>
+    </div>
+}
+else if (_error is not null)
+{
+    <div class="alert alert-danger">@_error</div>
+}
+else
+{
+    <p class="text-muted">Last 30 days: @_from.ToString("dd MMM yyyy") – @_to.ToString("dd MMM yyyy")</p>
+
+    @{
+        var elecBill = TotalBill(_electricity);
+        var gasBill = TotalBill(_gas);
+    }
+
+    <div class="row g-4">
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h5 class="card-title">⚡ Electricity</h5>
+                    @if (_electricity is not null)
+                    {
+                        <p class="display-6 fw-bold text-success mb-1">@_electricity.TotalConsumption.ToString("F1") kWh</p>
+                        @if (elecBill is not null)
+                        {
+                            <p class="fs-5 text-secondary mb-1">£@elecBill</p>
+                            <p class="text-muted small mb-2">@_electricity.AvgUnitRatePence!.Value.ToString("F2")p/kWh · @_electricity.DailyStandingChargePence!.Value.ToString("F2")p/day standing</p>
+                        }
+                        <a href="/electricity" class="btn btn-outline-success btn-sm">View detail</a>
+                    }
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <h5 class="card-title">🔥 Gas</h5>
+                    @if (_gas is not null)
+                    {
+                        <p class="display-6 fw-bold text-warning mb-1">@((_gas.TotalConsumption * 11.1m).ToString("F1")) kWh</p>
+                        <p class="text-muted small mb-1">@_gas.TotalConsumption.ToString("F2") m³ × 11.1</p>
+                        @if (gasBill is not null)
+                        {
+                            <p class="fs-5 text-secondary mb-1">£@gasBill</p>
+                            <p class="text-muted small mb-2">@_gas.AvgUnitRatePence!.Value.ToString("F2")p/kWh · @_gas.DailyStandingChargePence!.Value.ToString("F2")p/day standing</p>
+                        }
+                        <a href="/gas" class="btn btn-outline-warning btn-sm">View detail</a>
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private DateOnly _from = DateOnly.FromDateTime(DateTime.Today.AddDays(-30));
+    private DateOnly _to = DateOnly.FromDateTime(DateTime.Today);
+    private ConsumptionSummary? _electricity;
+    private ConsumptionSummary? _gas;
+    private bool _loading;
+    private string? _error;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!OctopusService.IsConfigured) return;
+
+        _loading = true;
+        try
+        {
+            var offset = TimeZoneInfo.Local.GetUtcOffset(DateTime.Now);
+            var from = new DateTimeOffset(_from.ToDateTime(TimeOnly.MinValue), offset);
+            var to = new DateTimeOffset(_to.ToDateTime(TimeOnly.MaxValue), offset);
+
+            var elecTask = OctopusService.GetElectricityConsumptionAsync(from, to, "day");
+            var gasTask = OctopusService.GetGasConsumptionAsync(from, to, "day");
+            await Task.WhenAll(elecTask, gasTask);
+
+            _electricity = elecTask.Result;
+            _gas = gasTask.Result;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load summary: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private static string? TotalBill(ConsumptionSummary s)
+    {
+        if (s.TotalUnitCostPence is null || s.DailyStandingChargePence is null) return null;
+        var total = s.TotalUnitCostPence.Value + s.DailyStandingChargePence.Value * s.Days;
+        return (total / 100m).ToString("F2");
+    }
+}

@@ -2,12 +2,11 @@ namespace OctopusDashboard.Services;
 
 public class AppState
 {
-    public bool ShowCosts { get; private set; } = false;
-    public event Action? OnChange;
-
-    public void ToggleShowCosts()
+    private bool _showCosts = false;
+    public bool ShowCosts
     {
-        ShowCosts = !ShowCosts;
-        OnChange?.Invoke();
+        get => _showCosts;
+        set { _showCosts = value; OnChange?.Invoke(); }
     }
+    public event Action? OnChange;
 }

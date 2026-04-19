@@ -1,0 +1,226 @@
+@page "/electricity"
+@rendermode InteractiveServer
+@inject IOctopusService OctopusService
+@inject IJSRuntime JS
+
+<PageTitle>Electricity Usage</PageTitle>
+
+<h1>⚡ Electricity Usage</h1>
+
+@if (!OctopusService.IsConfigured)
+{
+    <div class="alert alert-warning">
+        App is not configured. Return to <a href="/">Home</a> for setup instructions.
+    </div>
+}
+else
+{
+    <div class="row g-3 align-items-end mb-4">
+        <div class="col-auto">
+            <label class="form-label fw-semibold">From</label>
+            <input type="date" class="form-control" @bind="_from" @bind:format="yyyy-MM-dd" @bind:after="LoadData" />
+        </div>
+        <div class="col-auto">
+            <label class="form-label fw-semibold">To</label>
+            <input type="date" class="form-control" @bind="_to" @bind:format="yyyy-MM-dd" @bind:after="LoadData" />
+        </div>
+        <div class="col-auto">
+            <label class="form-label fw-semibold">Group by</label>
+            <select class="form-select" @bind="_groupBy" @bind:after="LoadData">
+                <option value="half_hour">Half hour</option>
+                <option value="hour">Hour</option>
+                <option value="day">Day</option>
+                <option value="week">Week</option>
+                <option value="month">Month</option>
+            </select>
+        </div>
+        <div class="col-auto">
+            <div class="form-check mt-4 pt-2">
+                <input class="form-check-input" type="checkbox" id="showPrevElec" @bind="_showPrevious" @bind:after="RenderChartAsync" />
+                <label class="form-check-label" for="showPrevElec">Show previous period</label>
+            </div>
+        </div>
+    </div>
+
+    @if (_loading)
+    {
+        <div class="d-flex align-items-center my-4">
+            <div class="spinner-border text-success me-3" role="status"></div>
+            <span>Loading from Octopus API...</span>
+        </div>
+    }
+    else if (_error is not null)
+    {
+        <div class="alert alert-danger">@_error</div>
+    }
+    else if (_summary is not null)
+    {
+        <div class="row g-3 mb-2">
+            <div class="col-sm-6 col-lg-3">
+                <div class="card border-success text-center h-100">
+                    <div class="card-body">
+                        <div class="text-muted small">Total consumption</div>
+                        <div class="fs-4 fw-bold text-success">@_summary.TotalConsumption.ToString("F2") kWh</div>
+                        @DeltaBadge(_summary.TotalConsumption, _prev?.TotalConsumption, "kWh", lowerIsBetter: true)
+                    </div>
+                </div>
+            </div>
+            @if (_summary.TotalUnitCostPence.HasValue)
+            {
+                <div class="col-sm-6 col-lg-3">
+                    <div class="card border-primary text-center h-100">
+                        <div class="card-body">
+                            <div class="text-muted small">Unit cost</div>
+                            <div class="fs-4 fw-bold text-primary">£@((_summary.TotalUnitCostPence.Value / 100m).ToString("F2"))</div>
+                            <div class="text-muted" style="font-size:0.75rem">@_summary.AvgUnitRatePence!.Value.ToString("F2")p/kWh avg</div>
+                            @DeltaBadge(_summary.TotalUnitCostPence.Value, _prev?.TotalUnitCostPence, "p", lowerIsBetter: true)
+                        </div>
+                    </div>
+                </div>
+                @if (_summary.DailyStandingChargePence.HasValue)
+                {
+                    <div class="col-sm-6 col-lg-3">
+                        <div class="card border-secondary text-center h-100">
+                            <div class="card-body">
+                                <div class="text-muted small">Standing charge</div>
+                                <div class="fs-4 fw-bold">£@((_summary.DailyStandingChargePence.Value * _summary.Days / 100m).ToString("F2"))</div>
+                                <div class="text-muted" style="font-size:0.75rem">@_summary.DailyStandingChargePence.Value.ToString("F2")p/day × @_summary.Days days</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-sm-6 col-lg-3">
+                        <div class="card border-dark text-center h-100">
+                            <div class="card-body">
+                                <div class="text-muted small">Total bill</div>
+                                <div class="fs-4 fw-bold">£@TotalBill(_summary)</div>
+                                <div class="text-muted" style="font-size:0.75rem">unit cost + standing</div>
+                                @DeltaBadge(TotalBillPence(_summary), TotalBillPence(_prev), "p", lowerIsBetter: true)
+                            </div>
+                        </div>
+                    </div>
+                }
+            }
+            else
+            {
+                <div class="col-sm-6 col-lg-3">
+                    <div class="card border-secondary text-center h-100">
+                        <div class="card-body">
+                            <div class="text-muted small">Average per period</div>
+                            <div class="fs-4 fw-bold">
+                                @(_summary.Intervals.Count > 0 ? (_summary.TotalConsumption / _summary.Intervals.Count).ToString("F3") : "—") kWh
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+        </div>
+
+        @if (_prev is not null && _prevFrom.HasValue)
+        {
+            <p class="text-muted small mb-3">
+                Compared to previous period: @_prevFrom.Value.ToString("dd MMM yyyy") – @_to.AddDays(-(_to.DayNumber - _from.DayNumber)).ToString("dd MMM yyyy")
+            </p>
+        }
+
+        <div style="position: relative; height: 400px;">
+            <canvas id="electricityChart"></canvas>
+        </div>
+    }
+}
+
+@code {
+    private DateOnly _from = DateOnly.FromDateTime(DateTime.Today.AddDays(-30));
+    private DateOnly _to = DateOnly.FromDateTime(DateTime.Today);
+    private string _groupBy = "day";
+
+    private ConsumptionSummary? _summary;
+    private ConsumptionSummary? _prev;
+    private DateOnly? _prevFrom;
+    private bool _loading;
+    private string? _error;
+    private bool _chartPending;
+    private bool _showPrevious = true;
+
+    protected override async Task OnInitializedAsync() => await LoadData();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (_chartPending && _summary is not null)
+        {
+            _chartPending = false;
+            await RenderChartAsync();
+        }
+    }
+
+    private async Task LoadData()
+    {
+        _loading = true;
+        _error = null;
+        _summary = null;
+        _prev = null;
+        _chartPending = false;
+
+        try
+        {
+            var offset = TimeZoneInfo.Local.GetUtcOffset(DateTime.Now);
+            var from = new DateTimeOffset(_from.ToDateTime(TimeOnly.MinValue), offset);
+            var to = new DateTimeOffset(_to.ToDateTime(TimeOnly.MaxValue), offset);
+            var duration = to - from;
+            var prevFrom = from - duration;
+
+            _prevFrom = DateOnly.FromDateTime(prevFrom.LocalDateTime);
+
+            var currentTask = OctopusService.GetElectricityConsumptionAsync(from, to, _groupBy);
+            var prevTask = OctopusService.GetElectricityConsumptionAsync(prevFrom, from, _groupBy);
+            await Task.WhenAll(currentTask, prevTask);
+
+            _summary = currentTask.Result;
+            _prev = prevTask.Result.Intervals.Count > 0 ? prevTask.Result : null;
+            _chartPending = true;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load data: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private async Task RenderChartAsync()
+    {
+        if (_summary is null) return;
+        var fmt = _groupBy is "half_hour" or "hour" ? "dd MMM HH:mm" : "dd MMM yyyy";
+        var labels = _summary.Intervals.Select(i => i.IntervalStart.LocalDateTime.ToString(fmt)).ToArray();
+        var data = _summary.Intervals.Select(i => (double)i.Consumption).ToArray();
+        var prevData = _showPrevious ? _prev?.Intervals.Select(i => (double)i.Consumption).ToArray() : null;
+        var prevLabel = _prevFrom.HasValue ? $"Previous ({_prevFrom.Value:dd MMM} – {_from:dd MMM})" : "Previous period";
+        await JS.InvokeVoidAsync("octopusCharts.render", "electricityChart", labels, data, "kWh", "#198754", prevData, prevLabel);
+    }
+
+    private static decimal? TotalBillPence(ConsumptionSummary? s) =>
+        s is { TotalUnitCostPence: not null, DailyStandingChargePence: not null }
+            ? s.TotalUnitCostPence.Value + s.DailyStandingChargePence.Value * s.Days
+            : null;
+
+    private static string TotalBill(ConsumptionSummary s) =>
+        TotalBillPence(s) is { } p ? (p / 100m).ToString("F2") : "—";
+
+    private static RenderFragment DeltaBadge(decimal? current, decimal? previous, string unit, bool lowerIsBetter) => __builder =>
+    {
+        if (current is null || previous is null or 0) return;
+        var delta = current.Value - previous.Value;
+        if (delta == 0) return;
+        var pct = delta / previous.Value * 100m;
+        var better = lowerIsBetter ? delta < 0 : delta > 0;
+        var cssClass = better ? "text-success" : "text-danger";
+        var arrow = delta < 0 ? "▼" : "▲";
+        var sign = delta > 0 ? "+" : "";
+
+        __builder.OpenElement(0, "div");
+        __builder.AddAttribute(1, "class", $"{cssClass} small mt-1");
+        __builder.AddContent(2, $"{arrow} {sign}{delta:F2} {unit} ({sign}{pct:F1}%)");
+        __builder.CloseElement();
+    };
+}

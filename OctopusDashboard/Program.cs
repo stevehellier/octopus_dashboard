@@ -9,6 +9,7 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
 builder.Services.Configure<OctopusSettings>(builder.Configuration.GetSection("Octopus"));
+builder.Services.AddScoped<AppState>();
 builder.Services.AddHttpClient<IOctopusService, OctopusService>(client =>
 {
     client.BaseAddress = new Uri("https://api.octopus.energy/v1/");

@@ -1,6 +1,8 @@
 @page "/gas"
 @rendermode InteractiveServer
 @inject IOctopusService OctopusService
+@inject AppState AppState
+@implements IDisposable
 @inject IJSRuntime JS
 
 <PageTitle>Gas Usage</PageTitle>
@@ -66,7 +68,7 @@ else
                     </div>
                 </div>
             </div>
-            @if (_summary.TotalUnitCostPence.HasValue)
+            @if (AppState.ShowCosts && _summary.TotalUnitCostPence.HasValue)
             {
                 <div class="col-sm-6 col-lg-3">
                     <div class="card border-primary text-center h-100">
@@ -141,6 +143,13 @@ else
     private string? _error;
     private bool _chartPending;
     private bool _showPrevious = true;
+
+    protected override void OnInitialized()
+    {
+        AppState.OnChange += StateHasChanged;
+    }
+
+    public void Dispose() => AppState.OnChange -= StateHasChanged;
 
     protected override async Task OnInitializedAsync() => await LoadData();
 

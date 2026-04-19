@@ -1,6 +1,8 @@
 @page "/"
 @rendermode InteractiveServer
 @inject IOctopusService OctopusService
+@inject AppState AppState
+@implements IDisposable
 
 <PageTitle>Octopus Dashboard</PageTitle>
 
@@ -37,11 +39,6 @@ else
 {
     <p class="text-muted">Last 30 days: @_from.ToString("dd MMM yyyy") – @_to.ToString("dd MMM yyyy")</p>
 
-    @{
-        var elecBill = TotalBill(_electricity);
-        var gasBill = TotalBill(_gas);
-    }
-
     <div class="row g-4">
         <div class="col-md-6">
             <div class="card h-100">
@@ -50,9 +47,9 @@ else
                     @if (_electricity is not null)
                     {
                         <p class="display-6 fw-bold text-success mb-1">@_electricity.TotalConsumption.ToString("F1") kWh</p>
-                        @if (elecBill is not null)
+                        @if (AppState.ShowCosts && _elecBill is not null)
                         {
-                            <p class="fs-5 text-secondary mb-1">£@elecBill</p>
+                            <p class="fs-5 text-secondary mb-1">£@_elecBill</p>
                             <p class="text-muted small mb-2">@_electricity.AvgUnitRatePence!.Value.ToString("F2")p/kWh · @_electricity.DailyStandingChargePence!.Value.ToString("F2")p/day standing</p>
                         }
                         <a href="/electricity" class="btn btn-outline-success btn-sm">View detail</a>
@@ -68,9 +65,9 @@ else
                     {
                         <p class="display-6 fw-bold text-warning mb-1">@((_gas.TotalConsumption * 11.1m).ToString("F1")) kWh</p>
                         <p class="text-muted small mb-1">@_gas.TotalConsumption.ToString("F2") m³ × 11.1</p>
-                        @if (gasBill is not null)
+                        @if (AppState.ShowCosts && _gasBill is not null)
                         {
-                            <p class="fs-5 text-secondary mb-1">£@gasBill</p>
+                            <p class="fs-5 text-secondary mb-1">£@_gasBill</p>
                             <p class="text-muted small mb-2">@_gas.AvgUnitRatePence!.Value.ToString("F2")p/kWh · @_gas.DailyStandingChargePence!.Value.ToString("F2")p/day standing</p>
                         }
                         <a href="/gas" class="btn btn-outline-warning btn-sm">View detail</a>
@@ -86,6 +83,8 @@ else
     private DateOnly _to = DateOnly.FromDateTime(DateTime.Today);
     private ConsumptionSummary? _electricity;
     private ConsumptionSummary? _gas;
+    private string? _elecBill;
+    private string? _gasBill;
     private bool _loading;
     private string? _error;
 
@@ -106,6 +105,8 @@ else
 
             _electricity = elecTask.Result;
             _gas = gasTask.Result;
+            _elecBill = TotalBill(_electricity);
+            _gasBill = TotalBill(_gas);
         }
         catch (Exception ex)
         {
@@ -116,6 +117,9 @@ else
             _loading = false;
         }
     }
+
+    protected override void OnInitialized() => AppState.OnChange += StateHasChanged;
+    public void Dispose() => AppState.OnChange -= StateHasChanged;
 
     private static string? TotalBill(ConsumptionSummary s)
     {

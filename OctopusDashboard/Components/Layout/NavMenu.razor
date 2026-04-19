@@ -1,3 +1,6 @@
+@inject OctopusDashboard.Services.AppState AppState
+@implements IDisposable
+
 <div class="top-row ps-3 navbar navbar-dark">
     <div class="container-fluid">
         <a class="navbar-brand" href="">Octopus Dashboard</a>
@@ -23,5 +26,18 @@
                 <span class="bi bi-fire-nav-menu" aria-hidden="true"></span> Gas
             </NavLink>
         </div>
+        <div class="nav-item px-3 mt-3">
+            <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="showCostsToggle"
+                       checked="@AppState.ShowCosts"
+                       @onchange="() => AppState.ToggleShowCosts()" />
+                <label class="form-check-label text-white" for="showCostsToggle">Show costs</label>
+            </div>
+        </div>
     </nav>
 </div>
+
+@code {
+    protected override void OnInitialized() => AppState.OnChange += StateHasChanged;
+    public void Dispose() => AppState.OnChange -= StateHasChanged;
+}

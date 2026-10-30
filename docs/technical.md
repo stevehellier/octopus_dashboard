@@ -62,10 +62,10 @@ All credentials are stored outside source control using .NET User Secrets.
 ```bash
 cd OctopusDashboard
 dotnet user-secrets set "Octopus:ApiKey"                "sk_live_..."
-dotnet user-secrets set "Octopus:Mpan"                  "2200014344475"
-dotnet user-secrets set "Octopus:ElectricityMeterSerial" "22L4356557"
-dotnet user-secrets set "Octopus:Mprn"                  "4256454305"
-dotnet user-secrets set "Octopus:GasMeterSerial"        "G4W02491710101"
+dotnet user-secrets set "Octopus:Mpan"                  "1234567890123"
+dotnet user-secrets set "Octopus:ElectricityMeterSerial" "AB1234567"
+dotnet user-secrets set "Octopus:Mprn"                  "1234567890"
+dotnet user-secrets set "Octopus:GasMeterSerial"        "G4P12345678901"
 dotnet user-secrets set "Octopus:AccountNumber"         "A-XXXXXXXX"
 dotnet user-secrets set "Octopus:ElectricityTariffCode" "E-1R-VAR-22-11-01-A"
 dotnet user-secrets set "Octopus:GasTariffCode"         "G-1R-VAR-22-11-01-A"
